@@ -1,0 +1,175 @@
+<!doctype html><meta charset="utf-8"><title>Mira Ledger money tests</title>
+<body style="font:14px system-ui;margin:16px">
+<h1>Money tests</h1><pre id="out"></pre>
+<script src="core.js"></script>
+<script>
+const C = Core, results = [];
+const near = (a, b) => Math.abs(a - b) < 0.005;
+function t(name, fn) { try { const r = fn(); results.push([r === true, name, r === true ? "" : "got " + JSON.stringify(r)]); } catch (e) { results.push([false, name, e.message]); } }
+const NOW = "2026-11-15";
+const base = () => { const s = C.emptyState(); s.usdRate = "60";
+  s.accounts = [{ id: "bank", name: "Bank", currency: "PHP", start: 10000 }, { id: "gc", name: "GCash", currency: "PHP", start: 1000 }, { id: "up", name: "Upwork", currency: "USD", start: 100 }];
+  s.debts = [{ id: "mama", name: "Mama", opening: 0 }];
+  s.streams = [{ id: "c1", name: "Client", expected: 5000, currency: "PHP", freq: "weekly", anchor: "2026-11-06", accountId: "bank" }];
+  s.bills = [{ id: "rent", name: "Rent", amount: 16000, freq: "monthly", by: "date", dueDay: 26, accountId: "bank", category: "Rent" }];
+  return s; };
+const add = (s, o) => { s.entries.push({ id: C.uid(), currency: "PHP", createdAt: "x", ...o }); return s; };
+
+/* Your report: borrowing 10k from Mama */
+t("borrowing 10k adds 10k to the debt", () => { const s = add(base(), { kind: "borrow", debtId: "mama", accountId: "bank", amount: 10000, date: "2026-11-03" }); return C.debtBalance(s, s.debts[0]) === 10000 || C.debtBalance(s, s.debts[0]); });
+t("borrowing is never earned income", () => { const s = add(base(), { kind: "borrow", debtId: "mama", accountId: "bank", amount: 10000, date: "2026-11-03" }); const st = C.statement(s, "2026-11", NOW); return (st.earned === 0 && st.borrowed === 10000) || st; });
+t("borrowed money raises the account balance", () => { const s = add(base(), { kind: "borrow", debtId: "mama", accountId: "bank", amount: 10000, date: "2026-11-03" }); return C.balances(s).bank === 20000 || C.balances(s); });
+t("repaying lowers debt and account, and isn't counted as spent", () => { const s = base(); add(s, { kind: "borrow", debtId: "mama", accountId: "bank", amount: 10000, date: "2026-11-03" }); add(s, { kind: "debt", debtId: "mama", accountId: "bank", amount: 2000, date: "2026-11-04" });
+  const st = C.statement(s, "2026-11", NOW); return (C.debtBalance(s, s.debts[0]) === 8000 && C.balances(s).bank === 18000 && st.spent === 0 && st.debtpay === 2000) || [C.debtBalance(s, s.debts[0]), st]; });
+t("order of events can't change a debt (overpay then borrow)", () => { const s = base(); s.debts[0].opening = 5000; add(s, { kind: "debt", debtId: "mama", accountId: "bank", amount: 7000, date: "2026-11-01" }); add(s, { kind: "borrow", debtId: "mama", accountId: "bank", amount: 10000, date: "2026-11-03" }); return C.debtBalance(s, s.debts[0]) === 8000 || C.debtBalance(s, s.debts[0]); });
+t("a debt correction changes the debt only", () => { const s = base(); add(s, { kind: "debtadjust", debtId: "mama", amount: 500, date: "2026-11-05" }); return (C.debtBalance(s, s.debts[0]) === 500 && C.balances(s).bank === 10000) || "bad"; });
+t("a paid bill linked to a debt lowers that debt", () => { const s = base(); s.debts[0].opening = 4000; s.bills.push({ id: "b2", name: "Mama plan", amount: 1000, freq: "monthly", dueDay: 5, debtId: "mama", accountId: "bank" }); add(s, { kind: "bill", billId: "b2", billMonth: "2026-11", billSlot: 1, accountId: "bank", amount: 1000, date: "2026-11-05" }); const st = C.statement(s, "2026-11", NOW); return (C.debtBalance(s, s.debts[0]) === 3000 && st.debtpay === 1000 && st.spent === 0) || st; });
+t("a finished debt stops asking for payments", () => { const s = base(); s.bills.push({ id: "b2", name: "Mama plan", amount: 1000, freq: "monthly", dueDay: 20, debtId: "mama", accountId: "bank" }); return !C.billSlots(s, "2026-11", NOW).some(x => x.bill.id === "b2") || "still asks"; });
+
+/* The month statement always adds up */
+t("start + in - out = end, in pesos", () => { const s = base();
+  add(s, { kind: "income", streamId: "c1", accountId: "bank", amount: 5000, date: "2026-11-06" });
+  add(s, { kind: "expense", category: "Gas", accountId: "gc", amount: 300, date: "2026-11-07" });
+  add(s, { kind: "transfer", accountId: "bank", toAccountId: "gc", amount: 1000, toAmount: 1000, date: "2026-11-08" });
+  const st = C.statement(s, "2026-11", NOW);
+  return near(st.start + st.earned + st.borrowed - st.spent - st.debtpay + st.correction + st.exchange, st.end) && st.exchange === 0 && near(st.end, C.totalPHP(s)) || st; });
+t("a USD withdrawal below the rate shows as exchange difference", () => { const s = base(); add(s, { kind: "transfer", accountId: "up", toAccountId: "bank", amount: 100, toAmount: 5800, date: "2026-11-08" }); const st = C.statement(s, "2026-11", NOW); return near(st.exchange, -200) || st.exchange; });
+t("USD income uses that payment's own rate", () => { const s = base(); add(s, { kind: "income", streamId: "c1", accountId: "up", amount: 100, currency: "USD", rate: 58, date: "2026-11-06" }); return C.statement(s, "2026-11", NOW).earned === 5800 || "bad"; });
+t("a balance correction is visible and adds up", () => { const s = base(); add(s, { kind: "correction", accountId: "bank", amount: -250, date: "2026-11-09" }); const st = C.statement(s, "2026-11", NOW); return (C.balances(s).bank === 9750 && st.correction === -250 && st.exchange === 0) || st; });
+t("each entry falls in exactly one group", () => { const s = C.sampleState(NOW); return s.entries.every(e => C.GROUP_LABEL[C.groupOf(s, e)]) || "bad"; });
+
+/* Editing */
+t("changing an entry from income to borrowed moves it everywhere", () => { const s = base(); const r = C.buildEntry(s, { kind: "income", streamId: "c1", accountId: "bank", amount: 10000, date: "2026-11-03" }); s.entries.push(r.entry);
+  const before = C.statement(s, "2026-11", NOW).earned; const fix = C.buildEntry(s, { ...r.entry, kind: "borrow", debtId: "mama" }); s.entries = s.entries.map(e => e.id === fix.entry.id ? fix.entry : e); const st = C.statement(s, "2026-11", NOW);
+  return (before === 10000 && st.earned === 0 && st.borrowed === 10000 && C.debtBalance(s, s.debts[0]) === 10000 && !fix.entry.streamId) || st; });
+t("moving an expense to another account moves the money", () => { const s = base(); const r = C.buildEntry(s, { kind: "expense", category: "Gas", accountId: "gc", amount: 100, date: "2026-11-03" }); s.entries.push(r.entry); const fix = C.buildEntry(s, { ...r.entry, accountId: "bank" }); s.entries = [fix.entry]; const b = C.balances(s); return (b.gc === 1000 && b.bank === 9900) || b; });
+t("entries without an account or amount are refused", () => { const s = base(); return !!(C.buildEntry(s, { kind: "expense", category: "Gas", amount: 1, date: NOW }).error && C.buildEntry(s, { kind: "expense", category: "Gas", accountId: "gc", amount: 0, date: NOW }).error) || "bad"; });
+t("money-in can be other income with no client", () => { const r = C.buildEntry(base(), { kind: "income", source: "Refund", accountId: "gc", amount: 50, date: NOW }); return (r.entry && r.entry.source === "Refund") || r; });
+
+/* Paydays and bills */
+t("one payment can't tick two paydays", () => { const s = base(); add(s, { kind: "income", streamId: "c1", accountId: "bank", amount: 5000, date: "2026-11-09" }); const got = C.paydays(s, "2026-11", NOW).filter(p => p.status === "received"); return got.length === 1 || got.length; });
+t("paying a bill marks only that month", () => { const s = base(); add(s, { kind: "bill", billId: "rent", billMonth: "2026-11", billSlot: 1, accountId: "bank", amount: 16000, date: "2026-11-26" }); const n = C.billSlots(s, "2026-11", "2026-11-27")[0].status, d = C.billSlots(s, "2026-12", "2026-11-27")[0].status; return (n === "paid" && d !== "paid") || [n, d]; });
+t("a removed bill leaves the estimate", () => { const s = base(); const a = C.forecast(s, "2026-11", NOW).dueBills; s.skips["rent|2026-11|1"] = true; const b = C.forecast(s, "2026-11", NOW).dueBills; return (a === 16000 && b === 0) || [a, b]; });
+t("twice-a-month falls back in short months", () => { const d = C.occDays({ freq: "twice", dueDay: 15, secondDay: 30 }, "2027-02"); return (d[0] === 15 && d[1] === 28) || d; });
+t("last Friday works", () => { const d = C.occDays({ freq: "monthly", by: "weekday", weekday: 5, nth: 5 }, "2026-11"); return d[0] === 27 || d; });
+t("estimate = have + coming - due", () => { const s = C.sampleState(NOW); const f = C.forecast(s, "2026-11", NOW); return near(f.have + f.coming - f.dueBills - f.dueOnes - f.dueBudgets, f.end) || f; });
+t("weeks cover the whole month once", () => { const w = C.weekRanges("2026-11"); return (w[0][0] === "2026-11-01" && w[w.length - 1][1] === "2026-11-30" && w.every((r, i) => !i || C.addDays(w[i - 1][1], 1) === r[0])) || w; });
+t("budget spending isn't double counted across budgets", () => { const s = base(); s.budgets = [{ id: "f1", name: "Sofa", category: "Furniture", amount: 100, freq: "anytime" }, { id: "f2", name: "Bed", category: "Furniture", amount: 100, freq: "anytime" }]; add(s, { kind: "expense", category: "Furniture", budgetId: "f2", accountId: "bank", amount: 60, date: NOW }); return (C.budgetSpent(s, s.budgets[0], "2026-11") === 0 && C.budgetSpent(s, s.budgets[1], "2026-11") === 60) || "bad"; });
+
+/* Moving from the first app */
+t("first-app backup imports with the same balances", () => { const old = { app: "Mira Ledger", format: 1, settings: { usdRate: "60", accounts: [{ id: "a", name: "A", currency: "PHP", start: 100 }], debts: [{ id: "d", name: "Mama", original: 5000, opening: 5000 }], bills: [{ id: "b", name: "T", amount: 4000, dueDay: 15, secondDay: 30, debtId: "d", accountId: "a" }], skips: { "b|2026-10|1": true } },
+  entries: [{ id: "1", kind: "borrow", debtId: "d", accountId: "a", amount: 10000, date: "2026-10-03", month: "2026-10", currency: "PHP" }, { id: "2", kind: "debt", debtId: "d", accountId: "a", amount: 2000, date: "2026-10-04", month: "2026-10", currency: "PHP" }] };
+  const before = JSON.stringify(old); const s = C.importBackup(old); return (C.balances(s).a === 8100 && C.debtBalance(s, s.debts[0]) === 13000 && s.bills[0].amount === 2000 && s.bills[0].freq === "twice" && s.skips["b|2026-10|1"] && JSON.stringify(old) === before) || s; });
+t("first app's object-shaped entries import", () => { const s = C.importBackup({ settings: {}, entries: { x: { id: "x", kind: "income", date: "2026-10-01", amount: 5 } } }); return s.entries.length === 1 || s; });
+t("this app's own backups round trip", () => { const s = C.sampleState(NOW); const again = C.importBackup(JSON.parse(JSON.stringify(C.exportBackup(s)))); return near(C.totalPHP(again, NOW), C.totalPHP(s, NOW)) || "bad"; });
+t("random files are refused", () => { try { C.importBackup({ hello: 1 }); return "accepted"; } catch (e) { return true; } });
+
+/* Receipts */
+const R = (text, f) => () => { const r = C.parseReceipt(text, NOW); return f(r) || r; };
+t("receipt: takes TOTAL, not VAT, cash or change", R("PUREGOLD PRICE CLUB\nSta Rosa\nItem A 120.00\nItem B 80.50\nSUBTOTAL 200.50\nVAT 21.48\nTOTAL 200.50\nCASH 500.00\nCHANGE 299.50\n10/15/2026", r => r.amount === 200.5 && r.date === "2026-10-15" && r.merchant === "PUREGOLD PRICE CLUB"));
+t("receipt: thousands separators", R("SM SUPERMARKET\nAMOUNT DUE ₱1,258.13\nOct 15, 2026", r => r.amount === 1258.13 && r.date === "2026-10-15"));
+t("receipt: bank QR screenshot", R("Transaction Successful\nPaid to\nPHILFOAM STA ROSA\nAmount\nPHP 696.00\n17 Oct 2026 2:45 PM\nFee 0.00", r => r.amount === 696 && r.merchant === "PHILFOAM STA ROSA" && r.date === "2026-10-17"));
+t("receipt: label on the line above the amount", R("JOLLIBEE\nTOTAL\n345.00\nCASH\n500.00", r => r.amount === 345));
+t("receipt: falls back to the largest amount", R("Corner Store\n15.00\n250.00\n50.00", r => r.amount === 250));
+t("receipt: no future dates", R("Shop\nTOTAL 10.00\n12/31/2026", r => r.date === null));
+t("receipt: unreadable text suggests nothing", R("~~ ## ..", r => r.amount === null && r.candidates.length === 0));
+t("category hints only use categories you have", () => { const s = base(); s.categories = { personal: ["Gas"], business: [] }; return (C.suggestCategory(s, "SHELL Sta Rosa") === "Gas" && C.suggestCategory(s, "Puregold") === "") || "bad"; });
+t("past merchants beat hints", () => { const s = base(); add(s, { kind: "expense", category: "Other", note: "Shell", accountId: "gc", amount: 1, date: NOW }); return C.suggestCategory(s, "shell") === "Other" || "bad"; });
+
+/* What Claude returns is checked before it reaches a form */
+const CL = (raw, f) => () => { const r = C.cleanClaudeReceipt(raw, ["Groceries", "Gas"], NOW); return f(r) || r; };
+t("Claude: a good reading passes through", CL({ is_receipt: true, amount: 995.75, currency: "PHP", other_amounts: [1000], merchant: " Puregold ", date: "2026-10-28", category: "Groceries", warning: "" }, r => r.amount === 995.75 && r.merchant === "Puregold" && r.date === "2026-10-28" && r.category === "Groceries" && r.candidates.join() === "995.75,1000"));
+t("Claude: bad amounts are dropped", CL({ amount: -5, other_amounts: ["12", 0, 1e9, 20] }, r => r.amount === null && r.candidates.join() === "20"));
+t("Claude: future and impossible dates are dropped", () => [ "2026-12-25", "2026-02-31", "15 Oct 2026", 5 ].every(date => C.cleanClaudeReceipt({ date }, [], NOW).date === null) || "kept a bad date");
+t("Claude: unknown categories are dropped", CL({ category: "Crypto" }, r => r.category === ""));
+t("Claude: long text is cut and missing fields are safe", CL({ merchant: "x".repeat(500) }, r => r.merchant.length === 60 && r.warning === "" && r.isReceipt === true));
+t("Claude: garbage doesn't crash", () => C.cleanClaudeReceipt(null, []).amount === null || "bad");
+t("Claude: not a receipt is reported", CL({ is_receipt: false }, r => r.isReceipt === false));
+
+/* The balance chart must agree with every other number */
+t("chart: today's point equals the balance", () => { const s = C.sampleState(NOW), b = C.balanceSeries(s, "2026-11", NOW); return near(b.actual[b.actual.length - 1].v, C.totalPHP(s, NOW)) || b.actual.slice(-1); });
+t("chart: the plan ends at the estimate", () => { const s = C.sampleState(NOW), b = C.balanceSeries(s, "2026-11", NOW); return (near(b.planned[b.planned.length - 1].v, C.forecast(s, "2026-11", NOW).end) && b.planned[b.planned.length - 1].date === "2026-11-30") || "off"; });
+t("chart: first of month and past months have no plan", () => { const s = C.sampleState(NOW); return (C.balanceSeries(s, "2026-10", NOW).planned.length === 0 && C.balanceSeries(s, "2026-10", NOW).actual.length === 31) || "bad"; });
+t("chart: covers each day once", () => { const b = C.balanceSeries(C.sampleState(NOW), "2026-11", NOW); return (b.actual.length === 15 && b.planned.length === 16) || [b.actual.length, b.planned.length]; });
+t("pace: compares the same days of last month", () => { const s = base(); add(s, { kind: "expense", category: "Gas", accountId: "gc", amount: 100, date: "2026-10-10" }); add(s, { kind: "expense", category: "Gas", accountId: "gc", amount: 999, date: "2026-10-20" }); add(s, { kind: "expense", category: "Gas", accountId: "gc", amount: 50, date: "2026-11-05" }); const p = C.spendPace(s, "2026-11", NOW); return (p.now === 50 && p.was === 100) || p; });
+
+/* Sums in the amount field */
+t("sums: plain, sums and commas", () => [["250", 250], ["1,250.50", 1250.5], ["120+80", 200], ["3x45", 135], ["3×45+10", 145], ["100-20.5", 79.5], ["90÷4", 22.5], ["10+2*3", 16], ["-5+10", 5]].every(([q, a]) => C.evalAmount(q) === a) || [["120+80"], C.evalAmount("120+80"), C.evalAmount("3x45")]);
+t("sums: anything else is refused", () => ["", "abc", "1+", "2**3", "alert(1)", "1/0", "(1+2)", "1..2"].every(q => C.evalAmount(q) === null) || ["1+", C.evalAmount("1+"), "1/0", C.evalAmount("1/0"), "1..2", C.evalAmount("1..2")]);
+t("budget pace: per day for the days left", () => { const s = base(); s.budgets = [{ id: "g", category: "Gas", amount: 3200, freq: "anytime" }]; add(s, { kind: "expense", category: "Gas", accountId: "gc", amount: 1600, date: "2026-11-03" }); const p = C.budgetPace(s, s.budgets[0], "2026-11", NOW); return (p.left === 1600 && p.daysLeft === 16 && p.perDay === 100) || p; });
+t("budget pace: over budget means nothing a day", () => { const s = base(); s.budgets = [{ id: "g", category: "Gas", amount: 100, freq: "anytime" }]; add(s, { kind: "expense", category: "Gas", accountId: "gc", amount: 150, date: "2026-11-03" }); const p = C.budgetPace(s, s.budgets[0], "2026-11", NOW); return (p.left === -50 && p.perDay === 0) || p; });
+
+/* Weekly budgeting */
+const W = () => { const s = base(); s.weekStart = 5; s.streams[0].anchor = "2026-11-06"; s.budgets = [{ id: "food", category: "Groceries", amount: 2000, freq: "weekly", by: "weekday", weekday: 6 }, { id: "gas", category: "Gas", amount: 3000, freq: "anytime" }]; s.bills = [{ id: "net", name: "Internet", amount: 1500, freq: "monthly", dueDay: 10, accountId: "gc", category: "Utilities" }]; return s; };
+t("week: starts on your payday", () => { const w = C.weekOf(W(), "2026-11-12"); return (w.from === "2026-11-06" && w.to === "2026-11-12") || w; });
+t("week: start defaults to your weekly pay day", () => { const s = base(); s.streams[0].anchor = "2026-11-06"; return C.weekStartDay(s) === 5 || C.weekStartDay(s); });
+t("week: left = pay − bills − budgets − other", () => { const s = W(); add(s, { kind: "expense", category: "Groceries", accountId: "gc", amount: 500, date: "2026-11-07" }); add(s, { kind: "expense", category: "Eat Out", accountId: "gc", amount: 300, date: "2026-11-08" });
+  const p = C.weekPlan(s, "2026-11-06", "2026-11-06"); const gasShare = 3000 * 7 / 30;
+  return (near(p.expected, 5000) && near(p.billsPlan, 1500) && near(p.budgetPlan, 2000 + gasShare) && near(p.other, 300) && near(p.left, 5000 - 1500 - 2000 - gasShare - 300) && near(p.leftNow, -500 - 300)) || p; });
+t("week: a paid bill counts once, at what you paid", () => { const s = W(); add(s, { kind: "bill", billId: "net", billMonth: "2026-11", billSlot: 1, accountId: "gc", amount: 1650, date: "2026-11-10" }); const p = C.weekPlan(s, "2026-11-06", "2026-11-11"); return (near(p.billsPlan, 1650) && near(p.billsPaid, 1650) && p.other === 0) || p; });
+t("week: overspending a budget lowers what's left", () => { const s = W(); add(s, { kind: "expense", category: "Groceries", accountId: "gc", amount: 2600, date: "2026-11-07" }); const p = C.weekPlan(s, "2026-11-06", "2026-11-08"); return near(p.budgets[0].left, -600) && near(p.budgets[0].spent, 2600) || p.budgets[0]; });
+t("week: borrowing never counts as pay", () => { const s = W(); add(s, { kind: "borrow", debtId: "mama", accountId: "bank", amount: 10000, date: "2026-11-07" }); const p = C.weekPlan(s, "2026-11-06", "2026-11-08"); return (p.received === 0 && p.borrowed === 10000) || p; });
+t("week: a week across two months counts both", () => { const s = W(); s.bills.push({ id: "rent", name: "Rent", amount: 9000, freq: "monthly", dueDay: 1, accountId: "bank", category: "Rent" }); const p = C.weekPlan(s, "2026-11-27", "2026-11-27"); return (p.from === "2026-11-27" && p.to === "2026-12-03" && p.bills.some(x => x.bill.id === "rent" && x.due === "2026-12-01")) || p.bills.map(x => x.due); });
+t("week: spent per day adds up to the week", () => { const s = W(); add(s, { kind: "expense", category: "Groceries", accountId: "gc", amount: 500, date: "2026-11-07" }); add(s, { kind: "debt", debtId: "mama", accountId: "gc", amount: 200, date: "2026-11-09" }); const p = C.weekPlan(s, "2026-11-06", "2026-11-10"); return near(p.days.reduce((t, d) => t + d.out, 0), p.budgetSpent + p.other + p.debtpay) || p.days; });
+
+/* Budgets with a date land in full on that date, never spread by day */
+const G = (o) => { const s = base(); s.budgets = [{ id: "g", category: "Groceries", amount: 8000, freq: "biweekly", anchor: "2026-11-06", ...o }]; return s; };
+t("dated budget: nothing this week if the shopping day is in another week", () => { const p = C.weekPlan(G(), "2026-11-09", "2026-11-08"); return (p.budgetPlan === 0 && p.budgets[0].limit === 0) || p.budgets[0]; });
+t("dated budget: the full amount on a shopping day still ahead", () => { const p = C.weekPlan(G(), "2026-11-16", "2026-11-08"); return (p.budgetPlan === 8000 && p.budgets[0].runs.join() === "2026-11-20") || p.budgets[0]; });
+t("dated budget: shopping day today still counts in full", () => { const p = C.weekPlan(G(), "2026-11-20", "2026-11-20"); return p.budgetPlan === 8000 || p.budgetPlan; });
+t("dated budget: spending on the day lowers what's still planned", () => { const s = G(); add(s, { kind: "expense", category: "Groceries", accountId: "gc", amount: 5000, date: "2026-11-20" }); const p = C.weekPlan(s, "2026-11-20", "2026-11-20"); return (p.budgetPlan === 8000 && p.budgets[0].aheadLeft === 3000) || p.budgets[0]; });
+t("dated budget: once its day passes, only spending counts", () => { const s = G(); add(s, { kind: "expense", category: "Groceries", accountId: "gc", amount: 6500, date: "2026-11-21" }); const p = C.weekPlan(s, "2026-11-20", "2026-11-23"); return (p.budgetPlan === 6500 && p.budgets[0].left === 1500) || p.budgets[0]; });
+t("dated budget: spending before the shopping day doesn't use up that day's budget", () => { const s = G(); add(s, { kind: "expense", category: "Groceries", accountId: "gc", amount: 700, date: "2026-11-17" }); const p = C.weekPlan(s, "2026-11-16", "2026-11-17"); return (p.budgetPlan === 8700 && p.budgets[0].aheadLeft === 8000) || p.budgets[0]; });
+t("dated budget: twice a month lands on the 15th and 30th", () => { const s = base(); s.budgets = [{ id: "g", category: "Groceries", amount: 8000, freq: "twice", by: "date", dueDay: 15, secondDay: 30 }]; const a = C.weekPlan(s, "2026-11-09", "2026-11-08").budgetPlan, b = C.weekPlan(s, "2026-11-02", "2026-11-02").budgetPlan; return (a === 8000 && b === 0) || [a, b]; });
+t("dated budget: month estimate counts the shopping days still ahead", () => { const s = G(); const f = C.forecast(s, "2026-11", "2026-11-10"); return near(f.dueBudgets, 8000) || f.dueBudgets; });
+
+/* Income sources that end, and pay that changes */
+t("income: no paydays after the last payday", () => { const s = base(); s.streams[0].until = "2026-11-20"; const a = C.paydayDates(s.streams[0], "2026-11").join(), b = C.paydayDates(s.streams[0], "2026-12").length; return (a === "2026-11-06,2026-11-13,2026-11-20" && b === 0) || [a, b]; });
+t("income: payments left counts today and stops at the last payday", () => { const s = base(); s.streams[0].until = "2026-11-20"; return C.paysLeft(s.streams[0], "2026-11-13") === 2 || C.paysLeft(s.streams[0], "2026-11-13"); });
+t("income: no end date means no count", () => C.paysLeft(base().streams[0], "2026-11-13") === null);
+t("income: 3 payments left from Nov 12 ends Nov 27", () => { const d = C.nextPaydays(base().streams[0], "2026-11-12", 3); return d.join() === "2026-11-13,2026-11-20,2026-11-27" || d; });
+t("income: a pay change applies from its date onward", () => { const s = base(); s.streams[0].changes = [{ from: "2026-11-20", amount: 6000 }]; const p = C.paydays(s, "2026-11", "2026-11-01").map(x => x.expected).join(); return p === "5000,5000,6000,6000" || p; });
+t("income: the latest change wins", () => { const x = { expected: 5000, changes: [{ from: "2026-12-01", amount: 7000 }, { from: "2026-11-20", amount: 6000 }] }; return (C.streamAmount(x, "2026-11-25") === 6000 && C.streamAmount(x, "2026-12-04") === 7000 && C.streamAmount(x, "2026-11-01") === 5000) || "bad"; });
+t("income: the week's pay uses the changed amount", () => { const s = base(); s.trackFrom = "2026-11-01"; s.streams[0].changes = [{ from: "2026-11-20", amount: 6000 }]; const p = C.weekPlan(s, "2026-11-23", "2026-11-23"); return p.income === 6000 || p.income; });
+
+/* Money you lent out */
+const L = () => { const s = W(); s.debts.push({ id: "jun", name: "Jun", opening: 0, dir: "owed" }); return s; };
+t("lend: leaves your account, adds to what they owe you", () => { const s = L(); add(s, { kind: "lend", debtId: "jun", accountId: "gc", amount: 3000, date: "2026-11-07" }); const j = s.debts.find(d => d.id === "jun"); return (C.balances(s).gc === -2000 && C.debtBalance(s, j) === 3000 && C.totalOwedToYou(s) === 3000 && C.totalOwed(s) === 0) || [C.balances(s).gc, C.debtBalance(s, j)]; });
+t("lend: getting paid back lowers it and returns money", () => { const s = L(); add(s, { kind: "lend", debtId: "jun", accountId: "gc", amount: 3000, date: "2026-11-07" }); add(s, { kind: "collect", debtId: "jun", accountId: "bank", amount: 1000, date: "2026-11-09" }); const j = s.debts.find(d => d.id === "jun"); return (C.debtBalance(s, j) === 2000 && C.balances(s).bank === 11000) || C.debtBalance(s, j); });
+t("lend: never counts as spending or pay, and the month still adds up", () => { const s = L(); add(s, { kind: "lend", debtId: "jun", accountId: "gc", amount: 3000, date: "2026-11-07" }); add(s, { kind: "collect", debtId: "jun", accountId: "bank", amount: 1000, date: "2026-11-09" }); const st = C.statement(s, "2026-11", NOW);
+  return (st.spent === 0 && st.earned === 0 && st.lent === 3000 && st.collected === 1000 && st.exchange === 0 && near(st.end, C.totalPHP(s, NOW))) || st; });
+t("lend: the week counts it as money out and back in", () => { const s = L(); add(s, { kind: "lend", debtId: "jun", accountId: "gc", amount: 3000, date: "2026-11-07" }); add(s, { kind: "collect", debtId: "jun", accountId: "gc", amount: 1000, date: "2026-11-08" }); const p = C.weekPlan(s, "2026-11-06", "2026-11-08"); const q = C.weekPlan(W(), "2026-11-06", "2026-11-08");
+  return (p.lent === 3000 && p.collected === 1000 && near(q.left - p.left, 2000) && p.received === 0) || p; });
+t("lend: can't mix up the two directions", () => { const s = L(); return !!(C.buildEntry(s, { kind: "borrow", debtId: "jun", accountId: "gc", amount: 5, date: NOW }).error && C.buildEntry(s, { kind: "lend", debtId: "mama", accountId: "gc", amount: 5, date: NOW }).error && C.buildEntry(s, { kind: "lend", debtId: "jun", accountId: "gc", amount: 5, date: NOW }).entry) || "bad"; });
+
+/* More bill schedules */
+t("every 2 weeks: counts from the start date", () => { const b = { freq: "biweekly", anchor: "2026-10-30" }; const a = C.occDays(b, "2026-11"), c = C.occDays(b, "2026-12"), o = C.occDays(b, "2026-10"); return (a.join() === "13,27" && c.join() === "11,25" && o.join() === "30") || [o, a, c]; });
+t("every 2 weeks: nothing before it starts", () => C.occDays({ freq: "biweekly", anchor: "2026-12-04" }, "2026-11").length === 0 || "bad");
+t("every 3 months: the right months only", () => { const b = { freq: "quarterly", anchor: "2026-08-31" }; return (C.occDays(b, "2026-11").join() === "30" && C.occDays(b, "2026-10").length === 0 && C.occDays(b, "2027-02").join() === "28") || [C.occDays(b, "2026-11"), C.occDays(b, "2027-02")]; });
+t("every year: once a year", () => { const b = { freq: "yearly", anchor: "2026-03-15" }; return (C.occDays(b, "2027-03").join() === "15" && C.occDays(b, "2027-04").length === 0 && C.occDays(b, "2025-03").length === 0) || "bad"; });
+t("last payment date stops the schedule", () => { const b = { freq: "monthly", dueDay: 15, until: "2026-12-20" }; return (C.occDays(b, "2026-12").join() === "15" && C.occDays(b, "2027-01").length === 0) || "bad"; });
+t("monthly cost of each schedule", () => near(C.monthlyTimes({ freq: "biweekly" }) * 12, 26) && near(C.monthlyTimes({ freq: "quarterly" }) * 3, 1) && near(C.monthlyTimes({ freq: "yearly" }) * 12, 1) || "bad");
+t("a yearly bill lands in the right week", () => { const s = W(); s.bills.push({ id: "ins", name: "Insurance", amount: 12000, freq: "yearly", anchor: "2025-11-09", accountId: "bank", category: "Other" }); const p = C.weekPlan(s, "2026-11-06", "2026-11-06"); return p.bills.some(x => x.bill.id === "ins" && x.due === "2026-11-09") || p.bills.map(x => x.due); });
+t("a debt plan every 2 weeks gives months left", () => { const s = base(); s.debts[0].opening = 13000; s.bills.push({ id: "p", name: "Mama", amount: 1000, freq: "biweekly", anchor: "2026-11-06", debtId: "mama", accountId: "bank" }); const p = C.debtPlan(s, s.debts[0]); return (p.months === Math.ceil(13000 / (1000 * 26 / 12))) || p; });
+
+/* Debts that aren't cash */
+t("item debts never touch money totals", () => { const s = base(); s.debts.push({ id: "lap", name: "Kuya Ben", kind: "thing", item: "Laptop", opening: 0 }); s.debts.push({ id: "pan", name: "Neighbor", kind: "thing", item: "Rice cooker", dir: "owed", opening: 0 }); return (C.totalOwed(s) === 0 && C.totalOwedToYou(s) === 0 && C.totalPHP(s, NOW) === C.totalPHP(base(), NOW)) || "bad"; });
+t("you can't log money against an item debt", () => { const s = base(); s.debts.push({ id: "lap", name: "Kuya Ben", kind: "thing", item: "Laptop", opening: 0 }); s.debts.push({ id: "pan", name: "Neighbor", kind: "thing", dir: "owed", opening: 0 });
+  return !!(C.buildEntry(s, { kind: "debt", debtId: "lap", accountId: "gc", amount: 5, date: NOW }).error && C.buildEntry(s, { kind: "borrow", debtId: "lap", accountId: "gc", amount: 5, date: NOW }).error && C.buildEntry(s, { kind: "collect", debtId: "pan", accountId: "gc", amount: 5, date: NOW }).error && !C.buildEntry(s, { kind: "expense", category: "Gas", debtId: "lap", accountId: "gc", amount: 5, date: NOW }).entry.debtId) || "bad"; });
+t("something bought on credit is owed in pesos like any debt", () => { const s = base(); s.debts.push({ id: "ph", name: "Home Credit", kind: "credit", item: "Phone", opening: 18000 }); add(s, { kind: "debt", debtId: "ph", accountId: "bank", amount: 1500, date: "2026-11-10" }); return (C.debtBalance(s, s.debts[1]) === 16500 && C.totalOwed(s) === 16500) || C.debtBalance(s, s.debts[1]); });
+
+/* Budgets count for the days ahead, plus whatever was actually spent */
+const B = () => { const s = base(); s.budgets = [{ id: "food", category: "Groceries", amount: 7000, freq: "weekly", by: "weekday", weekday: 1 }, { id: "gas", category: "Gas", amount: 3000, freq: "anytime" }]; return s; };
+t("starting on the last day of the week: only today's share counts", () => { const s = B(); s.budgets = [s.budgets[1]]; const p = C.weekPlan(s, "2026-11-02", "2026-11-08"); return (near(p.budgetPlan, 100) && near(p.budgets[0].limit, 700) && p.left > -101) || p.budgets[0]; });
+t("a weekly budget whose day has passed counts only what was spent", () => { const s = B(); s.budgets = [s.budgets[0]]; add(s, { kind: "expense", category: "Groceries", accountId: "gc", amount: 1200, date: "2026-11-03" }); const p = C.weekPlan(s, "2026-11-02", "2026-11-05"); return near(p.budgetPlan, 1200) || p.budgets[0]; });
+t("spending early uses up the past days first, then the days ahead", () => { const s = B(); s.budgets = [s.budgets[1]]; add(s, { kind: "expense", category: "Gas", accountId: "gc", amount: 450, date: "2026-11-03" });
+  const p = C.weekPlan(s, "2026-11-02", "2026-11-05").budgets[0]; return (near(p.spent, 450) && near(p.aheadLeft, 400 - 150) && near(p.plan, 700)) || p; });
+t("a future week counts the whole budget", () => { const p = C.weekPlan(B(), "2026-11-16", "2026-11-08"); return near(p.budgetPlan, 7000 + 700) || p.budgetPlan; });
+t("a past week counts only spending", () => { const s = B(); add(s, { kind: "expense", category: "Gas", accountId: "gc", amount: 80, date: "2026-10-27" }); const p = C.weekPlan(s, "2026-10-26", "2026-11-08"); return near(p.budgetPlan, 80) || p.budgetPlan; });
+t("month estimate: unspent days that passed don't count", () => { const s = B(); s.budgets = [s.budgets[1]]; const f = C.forecast(s, "2026-11", "2026-11-21"); return near(f.dueBudgets, 1000) || f.dueBudgets; });
+
+const failed = results.filter(r => !r[0]);
+document.title = (failed.length ? "FAILED " : "PASSED ") + results.length;
+document.getElementById("out").textContent = (failed.length ? failed.length + " FAILED of " : "All passed: ") + results.length + "\n\n" + results.map(r => (r[0] ? "ok   " : "FAIL ") + r[1] + (r[2] ? "\n     " + r[2] : "")).join("\n");
+window.__results = { total: results.length, failed: failed.map(r => r[1] + " :: " + r[2]) };
+</script>
