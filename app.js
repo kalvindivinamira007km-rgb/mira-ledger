@@ -2,7 +2,7 @@
 (function () {
 "use strict";
 const C = Core, $ = q => document.querySelector(q);
-const KEY = "mira-v2-data", OLD_KEY = "mira-ledger-data-v1", VERSION = "3.6";
+const KEY = "mira-v2-data", OLD_KEY = "mira-ledger-data-v1", VERSION = "3.7";
 let S = null;
 const UI = { tab: "home", month: C.today().slice(0, 7), sheets: [], wiz: null, actFilter: "all", actMode: "list", scope: "all", planMode: "bills", period: "week", weekFrom: "" };
 
@@ -300,6 +300,21 @@ function budgetWhy(x, w) {
   const note = passed >= 1 && w.isNow ? `Days that have passed only count what you spent, so ${money(Math.round(Math.max(0, passed - x.spent)))} unused from before today isn't counted.` : "";
   return { how, now: bits.join(" + "), note };
 }
+/* One row per budget for a week: what's planned, what's spent, and shopping days. Used on Home and Plan. */
+function weekBudRows(w) {
+  const now = C.today();
+  return w.budgets.filter(x => x.limit > 0 || x.spent > 0).map(x => {
+    const dated = C.freqOf(x.budget) !== "anytime", runs = x.runs || [];
+    const over = dated ? runs.length > 0 && x.left < 0 : x.spent > x.limit, daysLeft = w.isNow ? C.daysBetween(now, w.to) + 1 : 0, perDay = !dated && w.isNow && x.aheadLeft > 0 ? Math.floor(x.aheadLeft / daysLeft) : 0;
+    const todayPct = w.isNow ? (C.daysBetween(w.from, now) + 0.5) / 7 * 100 : null;
+    const sub = dated
+      ? (runs.length ? `${runs.map(r => fmtDate(r, true)).join(" & ")} · ${money(Math.round(x.spent))} spent of ${money(Math.round(x.limit))}` : `No shopping day this week${x.spent ? ` · ${money(Math.round(x.spent))} spent` : ""}`)
+      : `${money(Math.round(x.spent))} of ${money(Math.round(x.limit))}${perDay ? ` · ${money(perDay)} a day left` : ""}`;
+    const right = over ? money(Math.round(-x.left)) + " over" : dated && !runs.length ? (x.spent ? money(Math.round(x.spent)) + " spent" : "—") : money(Math.round(x.left)) + " left";
+    return `<div class="pad budrow"><div style="display:flex;gap:11px;align-items:center">${catTile(x.budget.category)}<button class="grow" data-a="editBudget" data-x="${x.budget.id}"><span class="rowt">${esc(x.budget.name || x.budget.category)}</span><br><span class="rows">${sub}</span></button><span class="amt ${over ? "red" : ""}">${right}</span></div>
+      <div class="track pace" style="margin-top:9px"><div class="fill ${over ? "over" : ""}" style="width:${x.limit ? Math.min(100, x.spent / x.limit * 100) : 100}%;${over ? "" : `background:${C.catColor(S, x.budget.category)}`}"></div>${todayPct !== null ? `<i class="today" style="left:${todayPct.toFixed(1)}%"></i>` : ""}</div></div>`;
+  }).join("");
+}
 function weekHome() {
   const w = C.weekPlan(S, UI.weekFrom), now = C.today(), future = w.from > now, past = w.to < now;
   const maxOut = Math.max(1, ...w.days.map(d => d.out));
@@ -318,17 +333,7 @@ function weekHome() {
   w.ones.filter(o => !o.entry).forEach(o => needs.push({ date: o.item.date, html: oneRow(o) }));
   w.pays.filter(p => !p.entry).forEach(p => needs.push({ date: p.date, html: payRow(p) }));
   needs.sort((a, b) => a.date.localeCompare(b.date));
-  const budRows = w.budgets.filter(x => x.limit > 0 || x.spent > 0).map(x => {
-    const dated = C.freqOf(x.budget) !== "anytime", runs = x.runs || [];
-    const over = dated ? runs.length > 0 && x.left < 0 : x.spent > x.limit, daysLeft = w.isNow ? C.daysBetween(now, w.to) + 1 : 0, perDay = !dated && w.isNow && x.aheadLeft > 0 ? Math.floor(x.aheadLeft / daysLeft) : 0;
-    const todayPct = w.isNow ? (C.daysBetween(w.from, now) + 0.5) / 7 * 100 : null;
-    const sub = dated
-      ? (runs.length ? `${runs.map(r => fmtDate(r, true)).join(" & ")} · ${money(Math.round(x.spent))} spent of ${money(Math.round(x.limit))}` : `No shopping day this week${x.spent ? ` · ${money(Math.round(x.spent))} spent` : ""}`)
-      : `${money(Math.round(x.spent))} of ${money(Math.round(x.limit))}${perDay ? ` · ${money(perDay)} a day left` : ""}`;
-    const right = over ? money(Math.round(-x.left)) + " over" : dated && !runs.length ? (x.spent ? money(Math.round(x.spent)) + " spent" : "—") : money(Math.round(x.left)) + " left";
-    return `<div class="pad budrow"><div style="display:flex;gap:11px;align-items:center">${catTile(x.budget.category)}<button class="grow" data-a="editBudget" data-x="${x.budget.id}"><span class="rowt">${esc(x.budget.name || x.budget.category)}</span><br><span class="rows">${sub}</span></button><span class="amt ${over ? "red" : ""}">${right}</span></div>
-      <div class="track pace" style="margin-top:9px"><div class="fill ${over ? "over" : ""}" style="width:${x.limit ? Math.min(100, x.spent / x.limit * 100) : 100}%;${over ? "" : `background:${C.catColor(S, x.budget.category)}`}"></div>${todayPct !== null ? `<i class="today" style="left:${todayPct.toFixed(1)}%"></i>` : ""}</div></div>`;
-  }).join("");
+  const budRows = weekBudRows(w);
   return `<div class="wrap home">${mast()}${periodBar()}
     <section class="envelope" aria-label="This week's pay envelope">
       <button class="env-tap" data-a="weekHow" aria-label="How this number is worked out">
@@ -426,11 +431,41 @@ function viewActivity() {
 }
 
 /* ---------- plan ---------- */
+/* Plan has two views: one week (Sunday to Saturday, the same week as Home) or a whole month. */
+function planBar() {
+  const toggle = `<div class="pswitch" role="tablist" aria-label="Plan by">${[["week", "Week"], ["month", "Month"]].map(([v, l]) => `<button role="tab" aria-selected="${UI.planPeriod === v}" class="${UI.planPeriod === v ? "on" : ""}" data-a="planPeriod" data-x="${v}">${l}</button>`).join("")}</div>`;
+  if (UI.planPeriod === "month") return `<div class="periodbar">${toggle}<div class="wknav"><button data-a="month" data-x="-1" aria-label="Previous month">‹</button><button class="prange" data-a="monthNow">${esc(monthName(UI.month))}<small>${UI.month === C.today().slice(0, 7) ? "This month" : "Back to this month"}</small></button><button data-a="month" data-x="1" aria-label="Next month">›</button></div></div>`;
+  const from = UI.weekFrom, to = C.addDays(from, 6), isNow = C.today() >= from && C.today() <= to;
+  return `<div class="periodbar">${toggle}<div class="wknav"><button data-a="wk" data-x="-1" aria-label="Previous week">‹</button><button class="prange" data-a="wkNow">${isNow ? "This week" : fmtDate(from) + "–" + fmtDate(to)}<small>${isNow ? fmtDate(from) + "–" + fmtDate(to) : "Back to this week"}</small></button><button data-a="wk" data-x="1" aria-label="Next week">›</button></div></div>`;
+}
 function viewPlan() {
-  const top = pageTop("Plan", monthBar());
+  const top = pageTop("Plan");
+  if (UI.planPeriod !== "month") return top + `<div class="wrap" style="padding-top:0;gap:16px">${planBar()}${planWeek()}</div>`;
   const tabs = seg("planMode", [["bills", "Bills"], ["weeks", "Weeks"], ["budgets", "Budgets"]], UI.planMode);
   const body = UI.planMode === "bills" ? planBills() : UI.planMode === "weeks" ? planWeeks() : planBudgets();
-  return top + `<div class="wrap" style="padding-top:0;gap:14px">${tabs}${body}</div>`;
+  return top + `<div class="wrap" style="padding-top:0;gap:14px">${planBar()}${tabs}${body}</div>`;
+}
+/* Plan → Week: everything planned for one week, in one place, with the same sums as Home. */
+function planWeek() {
+  const w = C.weekPlan(S, UI.weekFrom), whole = n => money(Math.round(n)), now = C.today();
+  const billsTotal = w.billsPlan + w.onesPlan, billsPaid = w.billsPaid + w.onesPaid;
+  const outPlan = billsTotal + w.budgetPlan + w.other + w.debtpay + w.lent - w.collected;
+  const billList = [...w.bills.map(x => ({ date: x.due, html: billRow(x) })), ...w.ones.map(o => ({ date: o.item.date, html: oneRow(o) }))].sort((a, b) => a.date.localeCompare(b.date));
+  const budRows = weekBudRows(w);
+  const sum = (label, val, sign, cls) => `<div class="eq"><span>${label}</span><b class="${cls || ""}">${sign}${whole(val)}</b></div>`;
+  return `<div class="panel">
+      ${sum("Pay", w.income, "+ ", "in")}
+      ${sum("Bills", billsTotal, "− ")}
+      ${sum("Budgets", w.budgetPlan, "− ")}
+      ${w.other ? sum("Other spending", w.other, "− ") : ""}
+      ${w.debtpay ? sum("Debt payments", w.debtpay, "− ") : ""}
+      ${w.lent - w.collected ? sum("Lent out (net)", w.lent - w.collected, "− ") : ""}
+      <div class="eq" style="font-weight:700"><span>${w.to < now ? "Left that week" : w.from > now ? "Planned to be left" : "Left this week"}</span><b class="${w.left < 0 ? "red" : ""}">${whole(w.left)}</b></div>
+    </div>
+    <section class="sect"><div class="secthead"><h2>Pay <span class="count">${w.pays.length}</span></h2></div><div class="panel">${w.pays.length ? w.pays.map(payRow).join("") : `<div class="empty small">No payday this week.</div>`}</div></section>
+    <section class="sect"><div class="secthead"><h2>Bills <span class="count">${billList.length}</span></h2>${billList.length ? `<span class="small muted">${whole(billsPaid)} paid of ${whole(billsTotal)}</span>` : ""}</div><div class="panel">${billList.length ? billList.map(x => x.html).join("") : `<div class="empty small">No bills due this week.</div>`}</div></section>
+    <section class="sect"><div class="secthead"><h2>Budgets</h2><span class="small muted">${whole(w.budgetSpent)} spent of ${whole(w.budgetPlan)}</span></div><div class="panel">${budRows || `<div class="empty small">No budgets this week.</div>`}</div></section>
+    <div class="two"><button class="btn" data-a="editBill" data-x="new">+ Bill</button><button class="btn" data-a="editBudget" data-x="new">+ Budget</button></div>`;
 }
 function planBills() {
   const m = UI.month, slots = C.billSlots(S, m), ones = C.oneTimes(S, m);
@@ -1114,7 +1149,7 @@ function renderNav() {
   $("#nav").innerHTML = `<div class="in-nav">${item("home", "Home", ICON.home)}${item("activity", "Activity", ICON.list)}<button class="plus" data-a="add" aria-label="Add an entry"><span>${ICON.plus}</span></button>${item("plan", "Plan", ICON.plan)}${item("debts", "Debts", ICON.debt)}</div>`;
 }
 function render() {
-  if (S && !UI.weekFrom) { UI.period = lsGet("mira-period") || "week"; UI.weekFrom = C.weekOf(S, C.today()).from; }
+  if (S && !UI.weekFrom) { UI.period = lsGet("mira-period") || "week"; UI.planPeriod = lsGet("mira-plan-period") || "week"; UI.weekFrom = C.weekOf(S, C.today()).from; }
   renderNav();
   const v = $("#view");
   if (!S) v.innerHTML = viewWelcome();
@@ -1271,11 +1306,13 @@ const A = {
   tab(x) { UI.tab = x; UI.wiz = null; UI.sheets = []; render(); window.scrollTo(0, 0); },
   add() { const from = UI.tab === "add" ? "home" : UI.tab; wizStart(); UI.wiz.from = from; UI.sheets = []; render(); window.scrollTo(0, 0); },
   month(x) { UI.month = C.addMonth(UI.month, +x); render(); },
+  monthNow() { UI.month = C.today().slice(0, 7); render(); },
+  planPeriod(x) { UI.planPeriod = x; lsSet("mira-plan-period", x); if (x === "month" && UI.weekFrom) UI.month = C.addDays(UI.weekFrom, 3).slice(0, 7); render(); },
   period(x) { UI.period = x; lsSet("mira-period", x); UI.weekFrom = C.weekOf(S, C.today()).from; render(); },
   wk(x) { UI.weekFrom = C.addDays(UI.weekFrom, 7 * +x); render(); },
   wkNow() { UI.weekFrom = C.weekOf(S, C.today()).from; render(); },
   showWeek(x) { UI.tab = "home"; UI.period = "week"; UI.weekFrom = x; render(); window.scrollTo(0, 0); },
-  planTab(x) { UI.tab = "plan"; UI.planMode = x; UI.month = UI.weekFrom ? UI.weekFrom.slice(0, 7) : UI.month; render(); window.scrollTo(0, 0); },
+  planTab(x) { UI.tab = "plan"; UI.planMode = x; UI.planPeriod = UI.period === "month" ? "month" : "week"; UI.month = UI.weekFrom ? C.addDays(UI.weekFrom, 3).slice(0, 7) : UI.month; render(); window.scrollTo(0, 0); },
   openDay(d) { openSheet({ type: "list", title: fmtDate(d, true), get: () => S.entries.filter(e => e.date === d) }); },
   weekList(kind) {
     const from = UI.weekFrom, to = C.addDays(from, 6), inR = e => e.date >= from && e.date <= to;

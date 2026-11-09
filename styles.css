@@ -488,3 +488,8 @@ body.scrolled .top { border-bottom-color: var(--rule, var(--line)); box-shadow: 
 :root[data-theme="dark"] body.scrolled .top { box-shadow: 0 10px 18px -8px rgba(0,0,0,.7); border-bottom-color: rgba(255,255,255,.08); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) body.scrolled .top { box-shadow: 0 10px 18px -8px rgba(0,0,0,.7); border-bottom-color: rgba(255,255,255,.08); } }
 body.scrolled::before { box-shadow: none; }
+
+/* iPhone: start the title bar below the clock/battery area. Without this, the sticky bar slides down
+   to that spot and covers the first row of the page (the tabs on Activity and Plan). */
+.top { margin-top: env(safe-area-inset-top, 0px); }
+.top + .wrap > .periodbar:first-child { margin-top: 4px; }
