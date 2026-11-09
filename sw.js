@@ -1,6 +1,6 @@
 // Mira Ledger service worker: works offline; updates arrive the next time the app opens.
 // Raise CACHE whenever core.js, app.js or styles.css change.
-const CACHE = "mira-v2-17";
+const CACHE = "mira-v2-18";
 const CORE = ["./", "./index.html", "./styles.css", "./core.js", "./app.js", "./manifest.webmanifest", "./vendor/font/figtree.woff2", "./vendor/font/archivo.woff2", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png"];
 self.addEventListener("install", e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE.map(u => new Request(u, { cache: "reload" })))).then(() => self.skipWaiting())));
 self.addEventListener("activate", e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE && !k.startsWith("mira-ocr")).map(k => caches.delete(k)))).then(() => self.clients.claim())));
