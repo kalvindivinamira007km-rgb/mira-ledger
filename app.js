@@ -2,7 +2,7 @@
 (function () {
 "use strict";
 const C = Core, $ = q => document.querySelector(q);
-const KEY = "mira-v2-data", OLD_KEY = "mira-ledger-data-v1", VERSION = "3.5";
+const KEY = "mira-v2-data", OLD_KEY = "mira-ledger-data-v1", VERSION = "3.6";
 let S = null;
 const UI = { tab: "home", month: C.today().slice(0, 7), sheets: [], wiz: null, actFilter: "all", actMode: "list", scope: "all", planMode: "bills", period: "week", weekFrom: "" };
 
@@ -1055,7 +1055,7 @@ const SHEETS = {
       <p class="small muted">Borrowed money isn't counted as pay. Tap any entry in Activity to change it.</p>` };
   },
   trackFrom() { return { title: "Started tracking on", body: `<form class="form" data-save="trackFrom"><p class="muted">Paydays, bills and one-time costs before this date aren't expected, so they won't show as late or count in your plans.</p><div class="field"><label for="tf-btn">Start date</label>${pick("date", "tf", 'name="tf"', S.trackFrom || "", true, "From the beginning")}</div><button class="btn primary" type="submit">Save</button></form>` }; },
-  weekStart() { return { title: "Week starts on", body: `<form class="form" data-save="weekStart"><p class="muted">Pick your payday, so each week runs from one pay to the next. Your weekly budgets and Home follow this.</p><div class="field"><label for="ws">First day of the week</label><select class="inp" id="ws" name="ws">${opts(C.WEEKDAYS.map((d, i) => [i, d]), C.weekStartDay(S))}</select></div><button class="btn primary" type="submit">Save</button></form>` }; },
+  weekStart() { return { title: "Week starts on", body: `<form class="form" data-save="weekStart"><p class="muted">Your weeks always start on this day and end the day before it, for example Sunday to Saturday. Home and your weekly budgets follow this.</p><div class="field"><label for="ws">First day of the week</label><select class="inp" id="ws" name="ws">${opts(C.WEEKDAYS.map((d, i) => [i, d]), C.weekStartDay(S))}</select></div><button class="btn primary" type="submit">Save</button></form>` }; },
   rate() { return { title: "Dollar rate", body: `<form class="form" data-save="rate"><div class="field"><label for="r-r">Pesos per $1</label><input class="inp" id="r-r" name="rate" inputmode="decimal" value="${esc(S.usdRate || "")}" required></div><p class="hint">Used to value your dollar balances and to fill in new dollar entries. Past payments keep the rate you saved with them.</p><button class="btn primary" type="submit">Save</button></form>` }; },
   backup() {
     const lb = lsGet("mira-last-backup");
@@ -1558,6 +1558,19 @@ const SAVE = {
 };
 
 /* ---------- events ---------- */
+/* Give the sticky top bar an edge once the page has scrolled, so it's clear content is sliding under it. */
+const markScroll = () => document.body.classList.toggle("scrolled", window.scrollY > 4);
+window.addEventListener("scroll", markScroll, { passive: true });
+/* Coming back to the app on a new day: if you were looking at "this week", show the new this week. */
+let seenDay = C.today();
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || !S) return;
+  const now = C.today(); if (now === seenDay) return;
+  const wasThis = UI.weekFrom === C.weekOf(S, seenDay).from;
+  seenDay = now;
+  if (wasThis) UI.weekFrom = C.weekOf(S, now).from;
+  if (!UI.sheets.length) render();
+});
 document.addEventListener("click", ev => {
   const el = ev.target.closest("[data-a]");
   if (!el) return;

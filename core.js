@@ -341,11 +341,10 @@ function spendPace(s, m, now) {
 }
 
 /* ---------- weekly budgeting: each week runs from your payday to the day before the next ---------- */
-/* Week start: what you chose, else the weekday of your first weekly pay, else Monday. */
+/* Week start: what you chose, else Sunday. It never follows paydays, so weeks don't shift when a payday changes. */
 function weekStartDay(s) {
   if (s.weekStart !== undefined && s.weekStart !== null && s.weekStart !== "") return +s.weekStart;
-  const weekly = (s.streams || []).find(x => !x.archived && (x.freq === "weekly" || x.freq === "biweekly") && x.anchor);
-  return weekly ? dparse(weekly.anchor).getDay() : 1;
+  return 0;
 }
 function weekOf(s, date) {
   const ws = weekStartDay(s), from = addDays(date, -((dparse(date).getDay() - ws + 7) % 7));

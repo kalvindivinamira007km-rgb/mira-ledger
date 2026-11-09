@@ -480,3 +480,11 @@ html, body { background: var(--bg); color: var(--ink); }
 .paychg { border: 1px solid var(--line, rgba(0,0,0,.1)); border-radius: 14px; padding: 10px 12px 4px; margin: 0; min-width: 0; }
 .paychg legend { font-weight: 600; padding: 0 4px; }
 .paychg > .hint { display: block; margin-bottom: 8px; }
+/* Sticky top bar: show an edge once content slides under it, and stop iPhone's rubber-band drag
+   from pulling the page (and the bottom menu) around on short screens. */
+html, body { overscroll-behavior-y: none; }
+.top { transition: box-shadow .15s ease, border-color .15s ease; border-bottom: 1px solid transparent; }
+body.scrolled .top { border-bottom-color: var(--rule, var(--line)); box-shadow: 0 10px 16px -10px rgba(0,0,0,.28); }
+:root[data-theme="dark"] body.scrolled .top { box-shadow: 0 10px 18px -8px rgba(0,0,0,.7); border-bottom-color: rgba(255,255,255,.08); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) body.scrolled .top { box-shadow: 0 10px 18px -8px rgba(0,0,0,.7); border-bottom-color: rgba(255,255,255,.08); } }
+body.scrolled::before { box-shadow: none; }
